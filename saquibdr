@@ -1,0 +1,164 @@
+1. PDF Parser → src/lib/pdf.ts
+import pdf from "pdf-parse";
+
+export async function extractTextFromPDF(file: Buffer) {
+  const data = await pdf(file);
+  return data.text;
+}
+
+Update API Route (CORE UPGRADE)
+src/app/api/roast/route.ts
+import { openai } from "@/lib/openai";
+import { NextResponse } from "next/server";
+import { extractTextFromPDF } from "@/lib/pdf";
+
+export async function POST(req: Request) {
+  try {
+    const formData = await req.formData();
+
+    const mode = formData.get("mode") as string;
+    const file = formData.get("file") as File | null;
+    let resumeText = formData.get("resume") as string;
+
+    // If PDF uploaded → extract text
+    if (file) {
+      const buffer = Buffer.from(await file.arrayBuffer());
+      resumeText = await extractTextFromPDF(buffer);
+    }
+
+    if (!resumeText) {
+      return NextResponse.json({ error: "No resume provided" }, { status: 400 });
+    }
+
+    const prompt = `
+You are an expert HR manager.
+
+Mode: ${mode}
+
+Analyze this resume and return STRICT JSON in this format:
+
+{
+  "score": number (0-100),
+  "sections": {
+    "content": number,
+    "clarity": number,
+    "impact": number,
+    "formatting": number
+  },
+  "feedback": "detailed feedback text"
+}
+
+Rules:
+- If mode is "roast": be brutally honest and slightly funny
+- If mode is "professional": be constructive
+- Scores must be realistic (not all 90+)
+
+Resume:
+${resumeText}
+`;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const raw = completion.choices[0].message.content || "{}";
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return NextResponse.json({ error: "Invalid AI response" }, { status: 500 });
+    }
+
+    return NextResponse.json(parsed);
+
+  } catch (error) {
+    return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
+  }
+}
+
+
+Update Form (File Upload)
+ResumeForm.tsx
+"use client";
+
+import { useState } from "react";
+
+export default function ResumeForm({ setResult, mode }: any) {
+  const [resume, setResume] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async () => {
+    setLoading(true);
+
+    const formData = new FormData();
+    formData.append("mode", mode);
+
+    if (file) {
+      formData.append("file", file);
+    } else {
+      formData.append("resume", resume);
+    }
+
+    const res = await fetch("/api/roast", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+    setResult(data);
+    setLoading(false);
+  };
+
+  return (
+    <div>
+      <textarea
+        placeholder="Paste your resume OR upload PDF..."
+        value={resume}
+        onChange={(e) => setResume(e.target.value)}
+      />
+
+      <input
+        type="file"
+        accept="application/pdf"
+        onChange={(e) => setFile(e.target.files?.[0] || null)}
+      />
+
+      <button onClick={handleSubmit} disabled={loading}>
+        {loading ? "Analyzing..." : "Analyze Resume"}
+      </button>
+    </div>
+  );
+}
+📊 4. New Output UI with Score
+RoastOutput.tsx
+export default function RoastOutput({ result }: any) {
+  if (!result) return null;
+
+  return (
+    <div className="output">
+      <h2>🎯 Resume Score: {result.score}/100</h2>
+
+      <h3>Breakdown:</h3>
+      <ul>
+        <li>Content: {result.sections?.content}</li>
+        <li>Clarity: {result.sections?.clarity}</li>
+        <li>Impact: {result.sections?.impact}</li>
+        <li>Formatting: {result.sections?.formatting}</li>
+      </ul>
+
+      <h3>💬 Feedback</h3>
+      <pre>{result.feedback}</pre>
+    </div>
+  );
+}
+
+Share Button
+“Share my score 💀”
+Auto-generate tweet
+📈 Score Badge
+Score: 42/100 → “Needs serious help 💀”
+Score: 78/100 → “Almost there 👀”
+Score: 90+ → “You’re hired 🚀”
